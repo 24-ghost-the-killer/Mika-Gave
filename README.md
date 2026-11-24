@@ -74,6 +74,23 @@ certificate and start everything:
 ./start.sh logs | status | stop
 ```
 
+### Sharing the server with another site's Envoy
+
+If another project's Envoy already owns ports 80/443 (as on a server that also runs other sites),
+`./start.sh deploy` notices and offers to run the gift **behind** it instead:
+
+* the gift app joins that project's Docker network (no Envoy of our own);
+* that Envoy's config gets one section between `# >>> stjernehimlen` / `# <<< stjernehimlen`
+  markers (`deploy/behind/patch_envoy.py`): a TLS filter chain chosen by SNI for the gift's domain
+  with the gift's **own** certificate, an HTTP rule that sends the gift's Let's Encrypt challenges
+  to the gift, and a cluster. Nothing of the other project's routes or certificate changes;
+* every change is validated with that project's exact Envoy image first, a timestamped backup is
+  kept, and if the Envoy doesn't answer after its restart the backup is restored automatically;
+* certificates land in a `stjernehimlen/` folder inside that Envoy's TLS mount and hot-reload on renewal.
+
+If that project rewrites its `envoy.yaml` (e.g. its own installer), run `./start.sh deploy` again.
+`./start.sh detach` removes the section (restoring the config exactly) and stops the gift.
+
 `./start.sh seal --rotate-link` (or any other `seal` flag) re-seals by hand. The steps below are what the scripts do, in detail.
 
 ## Step by step

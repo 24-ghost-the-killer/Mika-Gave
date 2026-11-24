@@ -1,0 +1,53 @@
+# The gift behind another project's Envoy that already owns ports 80/443 (MODE=behind in deploy/.env).
+# Used by ./start.sh deploy, which also adds a marked section for the gift's domain to that Envoy's config
+# (deploy/behind/patch_envoy.py). No Envoy of our own here:
+#
+#   other Envoy :80  ─ /.well-known/acme-challenge/ for DOMAIN ─► app (webroot shared with certbot)
+#   other Envoy :443 ─ SNI = DOMAIN, our certificate ──────────► app
+#
+# certbot writes the certificate into a folder the other Envoy mounts (PROXY_CERT_DIR), where its
+# watched_directory picks up renewals without a restart.
+name: stjernehimlen
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - acme-webroot:/var/www/acme:ro
+    networks:
+      proxy:
+        aliases: [stjernehimlen-gift]
+
+  certbot:
+    image: certbot/certbot:v5.9.0
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in deploy/.env}
+      CERT_OWNER: ${CERT_OWNER:-65532:65532}
+      CERT_KEY_MODE: ${CERT_KEY_MODE:-0400}
+    entrypoint: >
+      /bin/sh -c 'trap exit TERM;
+      while :; do
+        certbot renew --webroot -w /var/www/acme --quiet --deploy-hook "sh /hooks/install-cert.sh";
+        sleep 12h & wait $${!};
+      done'
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - acme-webroot:/var/www/acme
+      - ${PROXY_CERT_DIR:?run ./start.sh deploy to detect the other Envoy}:/certs
+      - ./certbot/install-cert.sh:/hooks/install-cert.sh:ro
+
+volumes:
+  letsencrypt:
+  acme-webroot:
+
+networks:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:?run ./start.sh deploy to detect the other Envoy}

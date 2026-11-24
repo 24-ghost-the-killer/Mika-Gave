@@ -2,7 +2,8 @@
 //!
 //! * `/assets/*` (content-hashed by Vite): `Cache-Control: public, max-age=31536000, immutable`
 //! * everything else (index.html, /v/*.bin ciphertext): `no-cache`, revalidated with ETag/Last-Modified
-//! * `/.well-known/acme-challenge/*`: served from the certbot webroot (`ACME_DIR`) for HTTP-01 renewals
+//! * `/.well-known/acme-challenge/*`: served from the certbot webroot (`ACME_DIR`, as passed to
+//!   `certbot --webroot -w`) for HTTP-01 challenges
 //! * `/healthz`: liveness probe (`server healthcheck` calls it, for Docker)
 //!
 //! The security headers are also set here, so the app is safe even without Envoy in front (local
@@ -50,7 +51,8 @@ async fn main() {
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .nest_service("/.well-known/acme-challenge", ServeDir::new(acme_dir))
+        // certbot --webroot writes tokens to <webroot>/.well-known/acme-challenge/<token>.
+        .nest_service("/.well-known/acme-challenge", ServeDir::new(format!("{acme_dir}/.well-known/acme-challenge")))
         .fallback_service(ServeDir::new(&static_dir))
         .layer(middleware::from_fn(headers));
 
