@@ -6,6 +6,9 @@
 #   ./start.sh preview      production build + leak check, served by the real server with its
 #                           security headers (http://localhost:8080)
 #   ./start.sh seal [args]  seal content/ now (args go to seal, e.g. --rotate-link or --no-passphrase)
+#   ./start.sh link         print the private link again (it opens the gift without the code)
+#   ./start.sh new-code     choose a new code (the old one stops working) and update the live site;
+#                           add --rotate-link to also replace the link
 #   ./start.sh deploy       on the server: domain config, first Let's Encrypt certificate, then
 #                           build and start app + Envoy + certbot (add --yes to skip the prompt).
 #                           If another project's Envoy already owns ports 80/443, it offers to run
@@ -68,6 +71,35 @@ seal_if_needed() {
   else
     ok "Sealed gift is up to date"
   fi
+}
+
+# ---------- keys ----------
+
+# The private link: the stored token after the domain.
+show_link() {
+  [ -s content/.link-token ] || die "There is no link yet. Run ./start.sh seal first."
+  local domain=""
+  [ -f deploy/.env ] && domain=$(sed -n 's/^DOMAIN=//p' deploy/.env | head -1)
+  if [ -n "$domain" ] && [ "$domain" != gave.example.dk ]; then
+    echo "https://$domain/#$(cat content/.link-token)"
+  else
+    echo "https://YOUR-DOMAIN/#$(cat content/.link-token)"
+  fi
+}
+
+# Re-seal with a new code (seal always asks), then rebuild the running site so it serves the new files.
+new_code() {
+  seal "$@"
+  if [ -f deploy/.env ] && command -v docker >/dev/null 2>&1 &&
+    [ -n "$(docker ps -q --filter label=com.docker.compose.project=stjernehimlen --filter label=com.docker.compose.service=app)" ]; then
+    compose_ready
+    say "Updating the live site"
+    "${COMPOSE[@]}" up -d --build app
+    ok "The live site now uses the new code. The old one no longer works."
+  else
+    ok "Sealed with the new code. Run ./start.sh deploy to put it online."
+  fi
+  echo "  Private link: $(show_link)"
 }
 
 # ---------- local ----------
@@ -504,6 +536,8 @@ case "${1:-$DEFAULT}" in
   dev) dev ;;
   preview) preview ;;
   seal) shift; seal "$@" ;;
+  link) show_link ;;
+  new-code) shift; new_code "$@" ;;
   deploy) deploy "${2:-}" ;;
   domain) set_domain "${2:-}" "${3:-}" ;;
   check-ports) check_ports warn ;;
