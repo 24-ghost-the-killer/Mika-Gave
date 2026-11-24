@@ -169,8 +169,8 @@ fn main() -> Result<()> {
     }
 
     // Passphrase slot.
-    if !args.no_passphrase {
-        let pass = read_passphrase(&gift)?;
+    let pass = if args.no_passphrase { None } else { read_passphrase(&gift)? };
+    if let Some(pass) = pass {
         let kdf = KdfParams { m_kib: args.kdf_mib * 1024, t: args.kdf_t, p: 1 };
         eprintln!("Deriving key (Argon2id, {} MiB, t={})…", args.kdf_mib, args.kdf_t);
         slots.push(dek.passphrase_slot(&pass, kdf, &mut rng).context("invalid KDF parameters")?);
@@ -249,21 +249,33 @@ fn parse_when(s: &str) -> Result<(f64, i32)> {
     Ok(((t.unix_timestamp_nanos() / 1_000_000) as f64, t.offset().whole_minutes() as i32))
 }
 
-fn read_passphrase(g: &Gift) -> Result<Zeroizing<String>> {
+/// `None` means link-only: the user pressed Enter without typing a passphrase.
+fn read_passphrase(g: &Gift) -> Result<Option<Zeroizing<String>>> {
     // For scripted builds only. Prefer the prompt: env vars end up in shell history and process listings.
     let pass = if let Ok(p) = std::env::var("SEAL_PASSPHRASE") {
         eprintln!("Using passphrase from SEAL_PASSPHRASE.");
         Zeroizing::new(p)
     } else {
+        eprintln!(
+            "\nChoose the code she will type to open the gift: a short sentence only you two would say works best.\n\
+             Nothing shows while you type. Press Enter on an empty line for no code (the private link opens it).\n"
+        );
         let a = Zeroizing::new(rpassword::prompt_password("Passphrase: ")?);
+        if a.trim().is_empty() {
+            eprintln!("No passphrase: the private link printed below will be the only way in.");
+            return Ok(None);
+        }
         let b = Zeroizing::new(rpassword::prompt_password("Again:      ")?);
         if gift_crypto::normalize_passphrase(&a) != gift_crypto::normalize_passphrase(&b) {
-            bail!("the two passphrases differ");
+            bail!("the two passphrases differ; run it again");
         }
         a
     };
     let norm = gift_crypto::normalize_passphrase(&pass);
-    ensure!(norm.chars().count() >= 4, "passphrase is too short");
+    ensure!(
+        norm.chars().count() >= 4,
+        "that code is too short: use at least 4 characters (a short sentence is best), or press Enter on an empty line for link-only"
+    );
 
     // zxcvbn knows the obvious guesses; feed it the personal facts an attacker could also try.
     let hints: Vec<&str> = [g.recipient.as_str(), g.sky.place.as_str(), g.sky.when.as_str()]
@@ -281,7 +293,7 @@ fn read_passphrase(g: &Gift) -> Result<Zeroizing<String>> {
              Use a longer sentence only the two of you would say, or run with --no-passphrase and use the link."
         );
     }
-    Ok(pass)
+    Ok(Some(pass))
 }
 
 fn human(s: f64) -> String {

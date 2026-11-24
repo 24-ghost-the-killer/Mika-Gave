@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # start.sh: run the gift.
 #
-#   ./start.sh [dev]        local dev server (http://localhost:5173), re-seals first if content/ changed
+#   ./start.sh              dev on your own machine; preview when you're logged in over SSH
+#   ./start.sh dev          local dev server (http://localhost:5173), re-seals first if content/ changed
 #   ./start.sh preview      production build + leak check, served by the real server with its
 #                           security headers (http://localhost:8080)
 #   ./start.sh seal [args]  seal content/ now (args go to seal, e.g. --rotate-link or --no-passphrase)
@@ -30,10 +31,22 @@ seal_needed() {
   [ -d content ] && [ -n "$(find content -type f -newer "$PAYLOAD" ! -name .link-token ! -name .DS_Store -print -quit)" ]
 }
 
+# True while content/ is still the untouched template: example name and no photos added.
+is_example() {
+  grep -qE '^recipient *= *"Navn"' content/gift.toml &&
+    [ -z "$(find content/photos -type f ! -name README.md ! -name .DS_Store -print -quit 2>/dev/null)" ]
+}
+
 seal() {
   [ -f content/gift.toml ] || die "content/gift.toml is missing. Run ./install.sh, then fill it in."
-  if grep -qE '^recipient *= *"Navn"' content/gift.toml; then
-    warn "content/gift.toml still holds the example text (recipient = \"Navn\")."
+  if is_example; then
+    # An untouched template from an older version may reference photos that don't exist; refresh it.
+    if ! cmp -s content/gift.toml content.example/gift.toml; then
+      cp content/gift.toml content/gift.toml.bak
+      cp content.example/gift.toml content/gift.toml
+      ok "Refreshed the example content/gift.toml (old copy: content/gift.toml.bak)"
+    fi
+    warn "content/gift.toml still holds the example text. Fine for a first look; edit it for the real gift."
   fi
   need cargo
   say "Sealing content/ → web/public/v/"
@@ -52,6 +65,20 @@ seal_if_needed() {
 
 # ---------- local ----------
 
+# This machine's address as seen by the SSH client (else localhost).
+host_addr() {
+  local ip
+  ip=$(printf '%s' "${SSH_CONNECTION:-}" | awk '{print $3}')
+  case "$ip" in "") echo localhost ;; *:*) echo "[$ip]" ;; *) echo "$ip" ;; esac
+}
+
+open_hint() { # open_hint URL
+  say "Open $1/ in your browser"
+  [ -s content/.link-token ] && echo "  · or skip the code with your private link: $1/#$(cat content/.link-token)"
+  [ -n "${SSH_CONNECTION:-}" ] && echo "  · on a server, the port must be open in its firewall (e.g. ufw allow ${1##*:}/tcp)"
+  return 0
+}
+
 ensure_web_deps() {
   need node
   [ -d web/node_modules ] || { say "Installing web dependencies"; npm --prefix web ci --no-audit --no-fund --loglevel=error; }
@@ -66,7 +93,8 @@ ensure_web_deps() {
 dev() {
   seal_if_needed
   ensure_web_deps
-  say "Dev server on http://localhost:5173 (Ctrl+C to stop). To skip the prompt, open your private link with the domain swapped for localhost:5173."
+  open_hint "http://localhost:5173"
+  say "Dev server running (Ctrl+C to stop)"
   exec npm --prefix web run dev -- --port 5173
 }
 
@@ -79,7 +107,8 @@ preview() {
   cargo build --quiet --release -p server
   local port="${PORT:-8080}" acme
   acme=$(mktemp -d)
-  say "Serving web/dist on http://localhost:$port with production headers (Ctrl+C to stop)"
+  open_hint "http://$(host_addr):$port"
+  say "Serving web/dist with production headers (Ctrl+C to stop)"
   # cargo run finds the binary wherever CARGO_TARGET_DIR points.
   PORT="$port" STATIC_DIR=web/dist ACME_DIR="$acme" exec cargo run --quiet --release -p server
 }
@@ -142,7 +171,8 @@ deploy() {
   ok "Live at https://$DOMAIN/"
 }
 
-case "${1:-dev}" in
+if [ -n "${SSH_CONNECTION:-}" ]; then DEFAULT=preview; else DEFAULT=dev; fi
+case "${1:-$DEFAULT}" in
   dev) dev ;;
   preview) preview ;;
   seal) shift; seal "$@" ;;

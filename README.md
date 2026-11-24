@@ -53,7 +53,10 @@ Dockerfile           multi-stage: Rust/wasm → Vite → distroless, non-root
 ```sh
 ./install.sh            # once, on your machine: toolchain, deps, builds, content/ from the template
 $EDITOR content/gift.toml && cp ~/Pictures/... content/photos/
-./start.sh              # seals the gift if content/ changed (asks for the passphrase), dev server on :5173
+./start.sh              # seals the gift if content/ changed, then serves it: dev server on :5173,
+                        # or (when logged in over SSH) the production preview on :8080
+                        # The "Passphrase:" prompt asks you to CHOOSE her code (hidden while typing,
+                        # asked twice). Press Enter on an empty line for no code: the link opens it.
 ./start.sh preview      # production build + leak check, real security headers, on :8080
 ```
 

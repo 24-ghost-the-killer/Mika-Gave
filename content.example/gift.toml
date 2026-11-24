@@ -24,20 +24,21 @@ title = "Til dig"
 text  = "Jeg har samlet nogle af vores stjerner. Tryk på dem, én ad gangen."
 
 # One [[memory]] per star. They are joined, in this order, into your constellation.
-# photo is optional (JPEG/PNG/WebP; export HEIC as JPEG first).
+# photo is optional (JPEG/PNG/WebP; export HEIC as JPEG first). The photo lines below start with #
+# so the example works without files; remove the # once your photo is in content/photos/.
 # alt/az (degrees) are optional. If you leave them out, the stars are placed in an arc across the southern sky.
 
 [[memory]]
 date  = "12. august 2023"
 title = "Første aften"
 text  = "Du havde min jakke på hele vejen hjem."
-photo = "photos/01.jpg"
+# photo = "photos/01.jpg"   ← remove the # once the file is in content/photos/
 
 [[memory]]
 date  = "3. marts 2024"
 title = "Skagen"
 text  = "Hvor de to have mødes, og vi frøs og grinede."
-photo = "photos/02.jpg"
+# photo = "photos/02.jpg"
 
 [[memory]]
 date  = "24. december 2024"
