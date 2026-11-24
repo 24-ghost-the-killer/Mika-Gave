@@ -9,6 +9,7 @@
 #   ./start.sh deploy       on the server: domain config, first Let's Encrypt certificate, then
 #                           build and start app + Envoy + certbot (add --yes to skip the prompt)
 #   ./start.sh domain NAME EMAIL   set (or change) the public domain and Let's Encrypt e-mail
+#   ./start.sh check-ports  show what (if anything) is using ports 80/443
 #   ./start.sh stop         stop the deployed stack
 #   ./start.sh logs         follow the deployed stack's logs
 #   ./start.sh status       show the deployed containers
@@ -116,6 +117,46 @@ preview() {
 
 # ---------- server ----------
 
+# Everything else holding host port $1: other Docker containers, or programs on the host.
+# Our own containers (project "stjernehimlen") don't count.
+port_holders() {
+  local port="$1"
+  if command -v docker >/dev/null 2>&1; then
+    docker ps --format '{{.Names}}|{{.Image}}|{{.Ports}}' 2>/dev/null |
+      grep -E ":$port->" | grep -v '^stjernehimlen-' |
+      awk -F'|' '{ print "Docker container \"" $1 "\" (" $2 ")" }' || true
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnpH "sport = :$port" 2>/dev/null | grep -v docker-proxy |
+      sed -E 's/.*users:\(\("([^"]+)".*/program "\1"/; t; s/.*/a program (run as root to see which)/' | sort -u || true
+  fi
+}
+
+# check_ports strict|warn: Envoy needs host ports 80 and 443 for itself.
+check_ports() {
+  local mode="$1" port holders busy=""
+  for port in 80 443; do
+    holders=$(port_holders "$port")
+    [ -n "$holders" ] || continue
+    busy=1
+    warn "Port $port is already in use by:"
+    printf '%s\n' "$holders" | sed 's/^/      /' >&2
+  done
+  if [ -z "$busy" ]; then
+    ok "Ports 80 and 443 are free for Envoy"
+    return 0
+  fi
+  cat >&2 <<'MSG'
+  The gift's Envoy needs ports 80 and 443 for itself. What to do:
+  · Old or unused container?  docker stop NAME && docker update --restart=no NAME   then run this again.
+  · A system web server?      sudo systemctl disable --now nginx   (or apache2 / caddy), then run this again.
+  · Serving your other sites? Keep it. The gift then has to run behind that server instead of using
+                              Envoy on 80/443; that needs a different setup.
+MSG
+  [ "$mode" = strict ] && die "Stopped before changing anything: ports 80/443 are taken."
+  return 0
+}
+
 valid_domain() { [[ "$1" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z0-9]$ ]]; }
 valid_email() { [[ "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; }
 
@@ -163,6 +204,7 @@ deploy() {
   [ -n "${LE_EMAIL:-}" ] && [ "$LE_EMAIL" != "you@example.com" ] || die "No e-mail set. Run: ./start.sh domain $DOMAIN you@example.com"
   valid_domain "$DOMAIN" || die "DOMAIN '$DOMAIN' in deploy/.env doesn't look like a domain name."
   set_envoy_domain "$DOMAIN"
+  check_ports strict
 
   seal_if_needed
 
@@ -200,6 +242,7 @@ case "${1:-$DEFAULT}" in
   seal) shift; seal "$@" ;;
   deploy) deploy "${2:-}" ;;
   domain) set_domain "${2:-}" "${3:-}" ;;
+  check-ports) check_ports warn ;;
   stop) compose_ready; "${COMPOSE[@]}" down ;;
   logs) compose_ready; "${COMPOSE[@]}" logs -f --tail 100 ;;
   status) compose_ready; "${COMPOSE[@]}" ps ;;

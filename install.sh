@@ -158,19 +158,8 @@ dns_check() {
   warn "DNS: $domain → ${got% } isn't one of this server's addresses (${mine# }). Fine behind NAT; otherwise fix the A record."
 }
 
-# Ports 80/443 must be free for Envoy (our own containers don't count).
-ports_check() {
-  command -v ss >/dev/null 2>&1 || return 0
-  local busy
-  busy=$(as_root ss -ltnpH 2>/dev/null | awk '$4 ~ /:(80|443)$/' | grep -v docker-proxy || true)
-  if [ -n "$busy" ]; then
-    warn "Something else is listening on port 80/443:"
-    printf '%s\n' "$busy" | sed 's/^/      /' >&2
-    warn "Stop it first (e.g. sudo systemctl disable --now nginx apache2 caddy), or Envoy can't start."
-  else
-    ok "Ports 80 and 443 are free"
-  fi
-}
+# Ports 80/443 must be free for Envoy: other containers and host programs both count.
+ports_check() { ./start.sh check-ports || true; }
 
 # Open 80/443 in ufw if it is active.
 firewall_check() {
