@@ -411,8 +411,12 @@ deploy_behind() {
       read -r -p "  Continue? [y/N] " answer || true
       [[ "$answer" =~ ^[YyJj] ]] || die "Stopped before the certificate. Run ./start.sh deploy again to continue."
     fi
-    "${COMPOSE[@]}" run --rm --no-deps certbot certonly --webroot -w /var/www/acme --non-interactive \
-      -d "$DOMAIN" -m "$LE_EMAIL" --agree-tos --no-eff-email --deploy-hook "sh /hooks/install-cert.sh" </dev/null
+    # Leftovers from an interrupted earlier attempt would otherwise keep running.
+    docker ps -aq --filter "name=stjernehimlen-certbot-run" | xargs -r docker rm -f >/dev/null 2>&1 || true
+    # --entrypoint certbot: the service's own entrypoint is the 12-hour renewal loop.
+    "${COMPOSE[@]}" run --rm --no-deps --entrypoint certbot certbot certonly --webroot -w /var/www/acme \
+      --non-interactive -d "$DOMAIN" -m "$LE_EMAIL" --agree-tos --no-eff-email \
+      --deploy-hook "sh /hooks/install-cert.sh" </dev/null
     behind_cert_ok || die "The certificate didn't arrive in $PROXY_CERT_DIR."
     ok "Certificate installed"
     apply_proxy_patch --tls
