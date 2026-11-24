@@ -60,11 +60,17 @@ $EDITOR content/gift.toml && cp ~/Pictures/... content/photos/
 ./start.sh preview      # production build + leak check, real security headers, on :8080
 ```
 
-On the server (only Docker needed):
+On a Linux server, `./install.sh` also sets up the website. It asks for your **domain** and an
+e-mail for Let's Encrypt, writes `deploy/.env`, points Envoy at the domain, checks DNS and ports
+80/443 (and opens them in ufw), offers to install Docker, and finally offers to fetch the HTTPS
+certificate and start everything:
 
 ```sh
-./install.sh --server   # checks Docker, creates deploy/.env. Set DOMAIN and LE_EMAIL there
-./start.sh deploy       # sets Envoy's domain, gets the first certificate, builds and starts everything
+./install.sh                                              # asks for the domain
+./install.sh --domain gave.example.dk --email you@example.com   # or say it up front
+./install.sh --server                                     # website only (gift sealed elsewhere)
+./start.sh domain ny.example.dk you@example.com           # change the domain later
+./start.sh deploy                                         # (re)start it; gets a new certificate if needed
 ./start.sh logs | status | stop
 ```
 
@@ -138,7 +144,7 @@ set -a; . deploy/.env; set +a       # DOMAIN, LE_EMAIL
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml run --rm -p 80:80 \
   --entrypoint certbot certbot certonly --standalone \
   -d "$DOMAIN" -m "$LE_EMAIL" --agree-tos --no-eff-email \
-  --deploy-hook /hooks/install-cert.sh
+  --deploy-hook "sh /hooks/install-cert.sh"
 ```
 
 The hook copies the certificate into the `certs` volume, where Envoy (non-root) can read it.

@@ -8,6 +8,7 @@
 #   ./start.sh seal [args]  seal content/ now (args go to seal, e.g. --rotate-link or --no-passphrase)
 #   ./start.sh deploy       on the server: domain config, first Let's Encrypt certificate, then
 #                           build and start app + Envoy + certbot (add --yes to skip the prompt)
+#   ./start.sh domain NAME EMAIL   set (or change) the public domain and Let's Encrypt e-mail
 #   ./start.sh stop         stop the deployed stack
 #   ./start.sh logs         follow the deployed stack's logs
 #   ./start.sh status       show the deployed containers
@@ -115,6 +116,33 @@ preview() {
 
 # ---------- server ----------
 
+valid_domain() { [[ "$1" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z0-9]$ ]]; }
+valid_email() { [[ "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; }
+
+# Point Envoy's virtual host for the gift at $1.
+set_envoy_domain() {
+  local domain="$1" envoy=deploy/envoy/envoy.yaml current
+  grep -qF "domains: [\"$domain\"]" "$envoy" && return 0
+  current=$(sed -nE 's/.*domains: \["([^"*]+)"\].*/\1/p' "$envoy" | head -1)
+  [ -n "$current" ] || die "Couldn't find the gift's virtual host in $envoy."
+  sed -i.bak "s/domains: \[\"$current\"\]/domains: [\"$domain\"]/" "$envoy" && rm -f "$envoy.bak"
+  ok "Envoy now answers for $domain (was $current)"
+}
+
+# ./start.sh domain NAME EMAIL: write deploy/.env and Envoy's virtual host.
+set_domain() {
+  local domain email
+  domain=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')
+  email="${2:-}"
+  [ -n "$domain" ] && [ -n "$email" ] || die "Usage: ./start.sh domain gave.example.dk you@example.com"
+  valid_domain "$domain" || die "'$domain' doesn't look like a domain name (e.g. gave.example.dk)."
+  valid_email "$email" || die "'$email' doesn't look like an e-mail address."
+  printf '%s\n' "# Written by ./start.sh domain (or ./install.sh). Change with: ./start.sh domain NAME EMAIL" \
+    "DOMAIN=$domain" "LE_EMAIL=$email" > deploy/.env
+  ok "deploy/.env: DOMAIN=$domain, LE_EMAIL=$email"
+  set_envoy_domain "$domain"
+}
+
 compose_ready() {
   need docker "Install Docker, then run ./install.sh --server."
   docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is missing (the 'docker compose' plugin)."
@@ -131,24 +159,18 @@ compose_ready() {
 deploy() {
   local assume_yes="${1:-}"
   compose_ready
-  [ -n "${DOMAIN:-}" ] && [ "$DOMAIN" != "gave.example.dk" ] || die "Set DOMAIN in deploy/.env."
-  [ -n "${LE_EMAIL:-}" ] && [ "$LE_EMAIL" != "you@example.com" ] || die "Set LE_EMAIL in deploy/.env."
-  case "$DOMAIN" in *[!a-zA-Z0-9.-]* | .* | *..*) die "DOMAIN '$DOMAIN' doesn't look like a host name." ;; esac
-
-  # Envoy's virtual host must name the domain.
-  local envoy=deploy/envoy/envoy.yaml current
-  if ! grep -qF "domains: [\"$DOMAIN\"]" "$envoy"; then
-    current=$(sed -nE 's/.*domains: \["([^"*]+)"\].*/\1/p' "$envoy" | head -1)
-    [ -n "$current" ] || die "Couldn't find the gift's virtual host in $envoy."
-    sed -i.bak "s/domains: \[\"$current\"\]/domains: [\"$DOMAIN\"]/" "$envoy" && rm -f "$envoy.bak"
-    ok "Envoy virtual host set to $DOMAIN (was $current)"
-  fi
+  [ -n "${DOMAIN:-}" ] && [ "$DOMAIN" != "gave.example.dk" ] || die "No domain set. Run: ./start.sh domain gave.example.dk you@example.com"
+  [ -n "${LE_EMAIL:-}" ] && [ "$LE_EMAIL" != "you@example.com" ] || die "No e-mail set. Run: ./start.sh domain $DOMAIN you@example.com"
+  valid_domain "$DOMAIN" || die "DOMAIN '$DOMAIN' in deploy/.env doesn't look like a domain name."
+  set_envoy_domain "$DOMAIN"
 
   seal_if_needed
 
-  # First certificate: Let's Encrypt standalone on port 80 (before Envoy takes the port).
-  if ! "${COMPOSE[@]}" run --rm --no-deps -T --entrypoint sh certbot -c 'test -s /certs/fullchain.pem' </dev/null >/dev/null 2>&1; then
-    say "No certificate yet. Requesting one for $DOMAIN from Let's Encrypt."
+  # First certificate (or a new one after a domain change): Let's Encrypt standalone on port 80,
+  # before Envoy takes the port.
+  if ! "${COMPOSE[@]}" run --rm --no-deps -T --entrypoint sh certbot \
+    -c 'test -s /certs/fullchain.pem && [ "$(cat /certs/domain 2>/dev/null)" = "$DOMAIN" ]' </dev/null >/dev/null 2>&1; then
+    say "No certificate for $DOMAIN yet. Requesting one from Let's Encrypt."
     echo "  · DNS for $DOMAIN must point at this server, and port 80 must be reachable and free."
     echo "  · This accepts the Let's Encrypt Subscriber Agreement: https://letsencrypt.org/repository/"
     if [ "$assume_yes" != "--yes" ]; then
@@ -159,7 +181,7 @@ deploy() {
     "${COMPOSE[@]}" stop envoy >/dev/null 2>&1 || true
     "${COMPOSE[@]}" run --rm --no-deps -p 80:80 --entrypoint certbot certbot \
       certonly --standalone --non-interactive -d "$DOMAIN" -m "$LE_EMAIL" \
-      --agree-tos --no-eff-email --deploy-hook /hooks/install-cert.sh
+      --agree-tos --no-eff-email --deploy-hook "sh /hooks/install-cert.sh"
     ok "Certificate installed"
   else
     ok "Certificate present (renewed automatically)"
@@ -177,6 +199,7 @@ case "${1:-$DEFAULT}" in
   preview) preview ;;
   seal) shift; seal "$@" ;;
   deploy) deploy "${2:-}" ;;
+  domain) set_domain "${2:-}" "${3:-}" ;;
   stop) compose_ready; "${COMPOSE[@]}" down ;;
   logs) compose_ready; "${COMPOSE[@]}" logs -f --tail 100 ;;
   status) compose_ready; "${COMPOSE[@]}" ps ;;

@@ -44,7 +44,7 @@ services:
     entrypoint: >
       /bin/sh -c 'trap exit TERM;
       while :; do
-        certbot renew --webroot -w /var/www/acme --quiet --deploy-hook /hooks/install-cert.sh;
+        certbot renew --webroot -w /var/www/acme --quiet --deploy-hook "sh /hooks/install-cert.sh";
         sleep 12h & wait $${!};
       done'
     volumes:
