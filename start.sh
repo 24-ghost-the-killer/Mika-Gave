@@ -10,6 +10,7 @@
 #                           build and start app + Envoy + certbot (add --yes to skip the prompt)
 #   ./start.sh domain NAME EMAIL   set (or change) the public domain and Let's Encrypt e-mail
 #   ./start.sh check-ports  show what (if anything) is using ports 80/443
+#   ./start.sh proxy-info   describe the other web server on 80/443 (to run the gift behind it)
 #   ./start.sh stop         stop the deployed stack
 #   ./start.sh logs         follow the deployed stack's logs
 #   ./start.sh status       show the deployed containers
@@ -132,6 +133,45 @@ port_holders() {
   fi
 }
 
+# ./start.sh proxy-info: describe the other container that owns port 443 (its project folder,
+# mounts, networks and Envoy/nginx config, with secrets blanked), so the gift can be set up behind it.
+proxy_info() {
+  need docker "Docker is needed for this."
+  local c
+  c=$(docker ps --format '{{.Names}}|{{.Ports}}' | grep -E ':443->' | grep -v '^stjernehimlen-' | cut -d'|' -f1 | head -1)
+  [ -n "$c" ] || c=$(docker ps --format '{{.Names}}|{{.Ports}}' | grep -E ':80->' | grep -v '^stjernehimlen-' | cut -d'|' -f1 | head -1)
+  [ -n "$c" ] || die "No other container is using port 80 or 443."
+
+  echo "===== container"
+  docker inspect "$c" --format 'name:      {{.Name}}
+image:     {{.Config.Image}}
+project:   {{index .Config.Labels "com.docker.compose.project"}}
+folder:    {{index .Config.Labels "com.docker.compose.project.working_dir"}}
+compose:   {{index .Config.Labels "com.docker.compose.project.config_files"}}
+command:   {{json .Config.Entrypoint}} {{json .Config.Cmd}}
+ports:     {{range $p, $b := .NetworkSettings.Ports}}{{$p}}{{if $b}}->{{(index $b 0).HostPort}}{{end}} {{end}}'
+  echo "===== networks"
+  docker inspect "$c" --format '{{range $n, $v := .NetworkSettings.Networks}}{{$n}}{{"\n"}}{{end}}'
+  echo "===== mounts"
+  docker inspect "$c" --format '{{range .Mounts}}{{.Type}}  {{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
+
+  # Config files from the mounts (yaml/conf/json, small ones only), secrets blanked.
+  local src f
+  while IFS= read -r src; do
+    [ -n "$src" ] || continue
+    for f in $( { [ -f "$src" ] && echo "$src"; [ -d "$src" ] && find "$src" -maxdepth 2 -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.conf' -o -name '*.json' -o -name 'Caddyfile' \) 2>/dev/null; } | head -20); do
+      case "$f" in *.pem | *.key | *.crt) continue ;; esac
+      [ "$(wc -c < "$f")" -le 200000 ] || continue
+      echo "===== file: $f"
+      perl -0777 -pe '
+        s/-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/REDACTED PRIVATE KEY/gs;
+        s/((?:password|passwd|secret|token|api[_-]?key|apikey|authorization|bearer|client_secret)[^:=\n]*[:=][ \t]*)[^\n]*/${1}REDACTED/gi;
+      ' "$f"
+    done
+  done < <(docker inspect "$c" --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}')
+  echo "===== end (check the text above for anything private before you share it)"
+}
+
 # check_ports strict|warn: Envoy needs host ports 80 and 443 for itself.
 check_ports() {
   local mode="$1" port holders busy=""
@@ -243,6 +283,7 @@ case "${1:-$DEFAULT}" in
   deploy) deploy "${2:-}" ;;
   domain) set_domain "${2:-}" "${3:-}" ;;
   check-ports) check_ports warn ;;
+  proxy-info) proxy_info ;;
   stop) compose_ready; "${COMPOSE[@]}" down ;;
   logs) compose_ready; "${COMPOSE[@]}" logs -f --tail 100 ;;
   status) compose_ready; "${COMPOSE[@]}" ps ;;
