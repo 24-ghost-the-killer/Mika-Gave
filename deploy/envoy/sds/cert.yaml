@@ -1,0 +1,9 @@
+# Filesystem SDS: Envoy reloads the certificate whenever the certbot hook moves new files
+# into /certs. No restart needed.
+resources:
+  - "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret
+    name: gift_cert
+    tls_certificate:
+      certificate_chain: { filename: /certs/fullchain.pem }
+      private_key: { filename: /certs/privkey.pem }
+      watched_directory: { path: /certs }

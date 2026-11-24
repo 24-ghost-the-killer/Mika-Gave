@@ -1,0 +1,12 @@
+[package]
+name = "server"
+description = "Tiny static file server for the built site (behind Envoy). Serves only public, encrypted files."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower-http = { version = "0.6", features = ["fs", "set-header"] }

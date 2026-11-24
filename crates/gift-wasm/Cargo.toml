@@ -1,0 +1,20 @@
+[package]
+name = "gift-wasm"
+description = "Browser core: vault (KDF + decryption), sky math, springs and procedural planisphere geometry."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gift-crypto = { path = "../gift-crypto" }
+wasm-bindgen = "0.2.100"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.50"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O3", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

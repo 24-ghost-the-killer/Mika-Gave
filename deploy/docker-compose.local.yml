@@ -1,0 +1,15 @@
+# Local smoke test of the full stack with a self-signed certificate. No certbot, high ports.
+#
+#   ./deploy/local-cert.sh                       # writes deploy/local-certs/ (gitignored)
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml \
+#     --env-file deploy/.env.example up --build app envoy
+#   curl -kI --resolve gave.example.dk:8443:127.0.0.1 https://gave.example.dk:8443/
+services:
+  envoy:
+    ports: !override
+      - "8080:8080"
+      - "8443:8443"
+    volumes: !override
+      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./envoy/sds:/etc/envoy/sds:ro
+      - ./local-certs:/certs:ro

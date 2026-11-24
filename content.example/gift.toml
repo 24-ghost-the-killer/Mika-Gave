@@ -1,0 +1,55 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Stjernehimlen: the gift's content.
+#
+#  cp -r content.example content     (content/ is gitignored and never leaves your machine)
+#  Fill in this file, put photos in content/photos/, then run:
+#  cargo run -p seal --release -- content web/public/v
+#
+#  EVERYTHING in this file is encrypted. Nothing here is visible on the server.
+# ─────────────────────────────────────────────────────────────────────────────
+
+recipient = "Navn"                 # Her name. Shown in the intro and the letter.
+domain    = "gave.example.dk"      # Host name only. Used to print the private link.
+
+[sky]
+# The moment whose sky she sees, e.g. your first evening together.
+# RFC 3339 with offset: summer time in Denmark is +02:00, winter time +01:00.
+when  = "2023-08-12T23:40:00+02:00"
+lat   = 55.6867                    # decimal degrees, north positive
+lon   = 12.5701                    # decimal degrees, east positive
+place = "Dronning Louises Bro, København"
+
+[intro]
+title = "Til dig"
+text  = "Jeg har samlet nogle af vores stjerner. Tryk på dem, én ad gangen."
+
+# One [[memory]] per star. They are joined, in this order, into your constellation.
+# photo is optional (JPEG/PNG/WebP; export HEIC as JPEG first).
+# alt/az (degrees) are optional. If you leave them out, the stars are placed in an arc across the southern sky.
+
+[[memory]]
+date  = "12. august 2023"
+title = "Første aften"
+text  = "Du havde min jakke på hele vejen hjem."
+photo = "photos/01.jpg"
+
+[[memory]]
+date  = "3. marts 2024"
+title = "Skagen"
+text  = "Hvor de to have mødes, og vi frøs og grinede."
+photo = "photos/02.jpg"
+
+[[memory]]
+date  = "24. december 2024"
+title = "Jul"
+text  = "Det første år med vores eget juletræ."
+# photo = "photos/03.jpg"
+
+[letter]
+title     = "Kære dig"
+body      = """
+Skriv dit brev her.
+
+Afsnit adskilles af en tom linje.
+"""
+signature = "Din, L."

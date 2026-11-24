@@ -1,0 +1,208 @@
+# Envoy edge for the gift.
+#
+#   :8080 (host :80)   ACME HTTP-01 challenges → app; everything else → 301 to https
+#   :8443 (host :443)  TLS 1.2/1.3 (ECDHE + AEAD only), h2 + http/1.1, brotli/gzip,
+#                      security headers, only the gift's host name; any other Host → 404
+#
+# ➜ Replace gave.example.dk with your domain (two places below).
+# Certificates come from filesystem SDS (sds/cert.yaml) and hot-reload on renewal.
+
+node: { id: gift-edge, cluster: gift } # required by SDS
+
+static_resources:
+  listeners:
+    # ------------------------------------------------------------------ HTTP :80
+    - name: http
+      address: { socket_address: { address: 0.0.0.0, port_value: 8080 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: http
+                strip_any_host_port: true
+                server_header_transformation: PASS_THROUGH
+                normalize_path: true
+                merge_slashes: true
+                path_with_escaped_slashes_action: REJECT_REQUEST
+                common_http_protocol_options:
+                  headers_with_underscores_action: REJECT_REQUEST
+                route_config:
+                  virtual_hosts:
+                    - name: redirect
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/.well-known/acme-challenge/" }
+                          route: { cluster: app, timeout: 5s }
+                        - match: { prefix: "/" }
+                          redirect: { https_redirect: true, response_code: MOVED_PERMANENTLY }
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+    # ----------------------------------------------------------------- HTTPS :443
+    - name: https
+      address: { socket_address: { address: 0.0.0.0, port_value: 8443 } }
+      per_connection_buffer_limit_bytes: 32768
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2", "http/1.1"]
+                tls_params:
+                  tls_minimum_protocol_version: TLSv1_2
+                  tls_maximum_protocol_version: TLSv1_3
+                  # TLS 1.2 suites (1.3 suites are fixed and all AEAD): forward secrecy + AEAD only.
+                  cipher_suites:
+                    - ECDHE-ECDSA-AES128-GCM-SHA256
+                    - ECDHE-RSA-AES128-GCM-SHA256
+                    - ECDHE-ECDSA-AES256-GCM-SHA384
+                    - ECDHE-RSA-AES256-GCM-SHA384
+                    - ECDHE-ECDSA-CHACHA20-POLY1305
+                    - ECDHE-RSA-CHACHA20-POLY1305
+                  ecdh_curves: ["X25519", "P-256"]
+                tls_certificate_sds_secret_configs:
+                  - name: gift_cert
+                    sds_config:
+                      resource_api_version: V3
+                      path_config_source:
+                        path: /etc/envoy/sds/cert.yaml
+                        watched_directory: { path: /etc/envoy/sds }
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: https
+                codec_type: AUTO
+                strip_any_host_port: true # match the vhost whatever port the client used
+                use_remote_address: true
+                server_header_transformation: PASS_THROUGH # no "server: envoy"
+                normalize_path: true
+                merge_slashes: true
+                path_with_escaped_slashes_action: REJECT_REQUEST
+                stream_idle_timeout: 60s
+                request_timeout: 30s
+                common_http_protocol_options:
+                  idle_timeout: 300s
+                  headers_with_underscores_action: REJECT_REQUEST
+                http2_protocol_options:
+                  max_concurrent_streams: 100
+                  initial_stream_window_size: 65536
+                  initial_connection_window_size: 1048576
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        # Path only, no query, no referrer, no user agent. (The #fragment never reaches a server.)
+                        text_format_source:
+                          inline_string: "[%START_TIME%] %REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH):120% %PROTOCOL% %RESPONSE_CODE% %BYTES_SENT% %DURATION%ms\n"
+                route_config:
+                  name: gift
+                  response_headers_to_remove: ["x-envoy-upstream-service-time"]
+                  virtual_hosts:
+                    - name: gift
+                      domains: ["gave.example.dk"] # ➜ your domain
+                      routes:
+                        # Belt and braces: wasm must be application/wasm for streaming compilation.
+                        - match: { safe_regex: { regex: "^/assets/[^/]+\\.wasm$" } }
+                          route: { cluster: app, timeout: 15s }
+                          response_headers_to_add:
+                            - header: { key: content-type, value: application/wasm }
+                              append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                        - match: { prefix: "/" }
+                          route: { cluster: app, timeout: 15s }
+                      response_headers_to_add:
+                        - header: { key: strict-transport-security, value: "max-age=63072000; includeSubDomains" }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                        - header: { key: x-robots-tag, value: "noindex, nofollow, noarchive, nosnippet, noimageindex" }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                        - header:
+                            key: content-security-policy
+                            value: "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob:; style-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests"
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                        - header: { key: referrer-policy, value: no-referrer }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                        - header: { key: x-content-type-options, value: nosniff }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                        - header: { key: x-frame-options, value: DENY }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                        - header: { key: permissions-policy, value: "camera=(), microphone=(), geolocation=()" }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                        - header: { key: cross-origin-opener-policy, value: same-origin }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                        - header: { key: cross-origin-resource-policy, value: same-origin }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                    # Anything not addressed to the gift's host name (IP scans, other Host headers).
+                    - name: other
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          direct_response: { status: 404 }
+                      response_headers_to_add:
+                        - header: { key: x-robots-tag, value: "noindex, nofollow" }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                http_filters:
+                  # Brotli first; clients without br fall through to gzip. Ciphertext
+                  # (application/octet-stream) and woff2 are left alone: they don't compress.
+                  - name: envoy.filters.http.compressor.brotli
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+                      response_direction_config:
+                        common_config:
+                          min_content_length: 256
+                          content_type: &compressible
+                            - text/html
+                            - text/css
+                            - text/plain
+                            - text/javascript
+                            - application/javascript
+                            - application/json
+                            - application/wasm
+                            - image/svg+xml
+                      compressor_library:
+                        name: brotli
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.compression.brotli.compressor.v3.Brotli
+                          quality: 5
+                          window_bits: 22
+                  - name: envoy.filters.http.compressor.gzip
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+                      response_direction_config:
+                        common_config:
+                          min_content_length: 256
+                          content_type: *compressible
+                      compressor_library:
+                        name: gzip
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip
+                          compression_level: BEST_SPEED
+                          window_bits: 15
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: app
+      type: STRICT_DNS
+      connect_timeout: 2s
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: app
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: app, port_value: 8080 } } }
+      circuit_breakers:
+        thresholds: [{ max_connections: 512, max_pending_requests: 256, max_requests: 512 }]
+
+overload_manager:
+  refresh_interval: 0.25s
+  resource_monitors:
+    - name: envoy.resource_monitors.global_downstream_max_connections
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.resource_monitors.downstream_connections.v3.DownstreamConnectionsConfig
+        max_active_downstream_connections: 2000

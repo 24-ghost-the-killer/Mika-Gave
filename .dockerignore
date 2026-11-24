@@ -1,0 +1,10 @@
+content/
+content.example/
+target/
+**/node_modules/
+web/dist/
+web/src/wasm/
+crates/gift-wasm/pkg/
+.git/
+.env
+deploy/

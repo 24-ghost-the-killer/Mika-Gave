@@ -1,0 +1,16 @@
+# Plaintext gift content and secrets: NEVER commit
+/content/
+.env
+
+# Sealed output (ciphertext). Kept out of git: offline guessing is only possible with the payload.
+/web/public/v/
+
+/target/
+node_modules/
+/web/dist/
+/web/src/wasm/
+/crates/gift-wasm/pkg/
+.DS_Store
+
+# Local smoke-test certificate (deploy/local-cert.sh)
+/deploy/local-certs/

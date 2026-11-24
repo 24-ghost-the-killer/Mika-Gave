@@ -1,0 +1,65 @@
+# docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
+name: stjernehimlen
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - acme-webroot:/var/www/acme:ro
+    networks: [backend]
+    # No published ports: only Envoy can reach it.
+
+  envoy:
+    image: envoyproxy/envoy:distroless-v1.39.6
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ports:
+      - "80:8080"
+      - "443:8443"
+    volumes:
+      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./envoy/sds:/etc/envoy/sds:ro
+      - certs:/certs:ro
+    networks: [backend, edge]
+
+  # Renews twice a day. HTTP-01 challenges go to the shared webroot, which the app serves
+  # under /.well-known/acme-challenge/ (Envoy forwards those over plain HTTP).
+  certbot:
+    image: certbot/certbot:v5.9.0
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in deploy/.env}
+    entrypoint: >
+      /bin/sh -c 'trap exit TERM;
+      while :; do
+        certbot renew --webroot -w /var/www/acme --quiet --deploy-hook /hooks/install-cert.sh;
+        sleep 12h & wait $${!};
+      done'
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - acme-webroot:/var/www/acme
+      - certs:/certs
+      - ./certbot/install-cert.sh:/hooks/install-cert.sh:ro
+    networks: [edge]
+
+volumes:
+  letsencrypt:
+  acme-webroot:
+  certs:
+
+networks:
+  backend:
+    internal: true
+  edge:

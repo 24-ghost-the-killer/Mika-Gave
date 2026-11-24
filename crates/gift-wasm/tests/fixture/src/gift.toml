@@ -1,0 +1,11 @@
+# Test fixture only (dummy content). Regenerate: SEAL_PASSPHRASE="under stjernerne ved broen" cargo run -p seal -- crates/gift-wasm/tests/fixture/src crates/gift-wasm/tests/fixture
+recipient = "Testperson"
+domain = "localhost"
+[sky]
+when = "2023-08-12T23:40:00+02:00"
+lat = 55.6867
+lon = 12.5701
+[[memory]]
+title = "Fixture"
+[letter]
+body = "Hej fra fixture."

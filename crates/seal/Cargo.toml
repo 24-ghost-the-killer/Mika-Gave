@@ -1,0 +1,22 @@
+[package]
+name = "seal"
+description = "Encrypts content/ (gift.toml + photos) into web/public/v/. Runs on your machine only."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+gift-crypto = { path = "../gift-crypto" }
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+time = { version = "0.3", features = ["parsing"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+rpassword = "7.3"
+zxcvbn = "3.1"
+rand = "0.8"
+zeroize = "1.8"
+
