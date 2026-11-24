@@ -3,6 +3,7 @@
 #
 #   ./install.sh            your own machine: toolchain, dependencies, builds, content/ template
 #   ./install.sh --server   the server: only checks Docker (the image builds everything else)
+#   ./install.sh --yes      don't ask before installing Rust or Node.js when they are missing
 #
 # Safe to run again; nothing that exists is overwritten.
 set -euo pipefail
@@ -40,14 +41,42 @@ Next:
 EOF
 }
 
+ASSUME_YES=""
+ask() { # ask "question": yes unless the answer starts with n (or --yes was given)
+  [ -n "$ASSUME_YES" ] && return 0
+  local a=""
+  read -r -p "  $1 [Y/n] " a || true
+  [[ ! "$a" =~ ^[Nn] ]]
+}
+
+# Rust via the official rustup installer, if missing.
+ensure_rust() {
+  [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env" # a fresh install isn't on PATH yet
+  command -v rustup >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1 && return
+  say "Rust is not installed."
+  need curl "Install curl, or Rust by hand from https://rustup.rs."
+  ask "Install it now with the official installer from https://rustup.rs?" || die "Install Rust from https://rustup.rs, then run ./install.sh again."
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+  . "$HOME/.cargo/env"
+}
+
+# Node.js 20+, via Homebrew on macOS if available; otherwise explain.
+ensure_node() {
+  local major=0
+  command -v node >/dev/null 2>&1 && major=$(node -p 'process.versions.node.split(".")[0]')
+  [ "$major" -ge 20 ] && command -v npm >/dev/null 2>&1 && return
+  [ "$major" -gt 0 ] && say "Node.js $major is too old (20 or newer is needed)." || say "Node.js is not installed."
+  if [ "$(uname)" = Darwin ] && command -v brew >/dev/null 2>&1; then
+    ask "Install it now with Homebrew (brew install node)?" || die "Install Node.js 20+ from https://nodejs.org, then run ./install.sh again."
+    brew install node
+  else
+    die "Install Node.js 20 or newer (https://nodejs.org, or e.g. 'sudo apt install nodejs npm' / nvm), then run ./install.sh again."
+  fi
+}
+
 dev_setup() {
-  need rustup "Install Rust from https://rustup.rs (then open a new terminal)."
-  need cargo "Install Rust from https://rustup.rs (then open a new terminal)."
-  need node "Install Node.js 20 or newer (https://nodejs.org or your package manager)."
-  need npm "npm comes with Node.js."
-  local node_major
-  node_major=$(node -p 'process.versions.node.split(".")[0]')
-  [ "$node_major" -ge 20 ] || die "Node.js $node_major is too old; 20 or newer is needed."
+  ensure_rust
+  ensure_node
   ok "Rust $(rustc --version | cut -d' ' -f2), Node $(node --version)"
 
   say "Adding the WebAssembly target"
@@ -91,9 +120,10 @@ Next:
 EOF
 }
 
+for arg in "$@"; do [ "$arg" = "--yes" ] && ASSUME_YES=1; done
 case "${1:-}" in
   --server) server_setup ;;
-  "") dev_setup ;;
+  "" | --yes) dev_setup ;;
   -h | --help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0" ;;
   *) die "Unknown option $1 (try --help)" ;;
 esac
