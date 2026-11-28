@@ -8,8 +8,12 @@ export class Overlay {
   private caption: HTMLElement;
   private hint: HTMLElement;
   readonly letterButton: HTMLButtonElement;
+  readonly adventButton: HTMLButtonElement;
+  private toastEl: HTMLElement;
+  private toastTimer = 0;
   onBegin: () => void = () => {};
   onLetter: () => void = () => {};
+  onAdvent: () => void = () => {};
 
   constructor(root: HTMLElement, m: Manifest) {
     const begin = h("button", { class: "intro__begin", text: t.begin, attrs: { type: "button" } });
@@ -31,7 +35,23 @@ export class Overlay {
     this.hint = h("p", { class: "hint", text: t.hint });
     this.letterButton = h("button", { class: "letter-btn", text: `✦ ${t.letter}`, attrs: { type: "button" } });
     this.letterButton.addEventListener("click", () => this.onLetter());
-    root.append(this.intro, this.caption, this.hint, this.letterButton);
+    this.adventButton = h("button", { class: "advent-btn", text: `✦ ${t.advent}`, attrs: { type: "button" } });
+    this.adventButton.addEventListener("click", () => this.onAdvent());
+    this.toastEl = h("p", { class: "toast", attrs: { role: "status", "aria-live": "polite" } });
+    root.append(this.intro, this.caption, this.hint, this.letterButton, this.adventButton, this.toastEl);
+  }
+
+  showAdventButton(fresh: boolean): void {
+    this.adventButton.classList.add("is-shown");
+    this.adventButton.classList.toggle("is-fresh", fresh);
+  }
+
+  /** A short message near the bottom that fades away by itself. */
+  toast(text: string, ms = 3800): void {
+    this.toastEl.textContent = text;
+    this.toastEl.classList.add("is-shown");
+    clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => this.toastEl.classList.remove("is-shown"), ms);
   }
 
   showIntro(): void {

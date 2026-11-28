@@ -25,6 +25,21 @@ impl Vault {
         Ok(Vault { key: h.unlock_passphrase(passphrase).map_err(to_js)? })
     }
 
+    /// Unlock with the answers to the quiz questions (combined exactly as `seal` does).
+    #[wasm_bindgen(js_name = unlockQuiz)]
+    pub fn unlock_quiz(header: &[u8], answers: Vec<String>) -> Result<Vault, JsError> {
+        let h = Header::parse(header).map_err(to_js)?;
+        let pass = gift_crypto::quiz_passphrase(&answers);
+        Ok(Vault { key: h.unlock_passphrase(&pass).map_err(to_js)? })
+    }
+
+    /// Decrypt an advent door's blob: needs this vault's key *and* the day secret the server
+    /// releases on that date.
+    #[wasm_bindgen(js_name = openDoor)]
+    pub fn open_door(&self, id: &str, blob: &[u8], day_secret: &[u8]) -> Result<Vec<u8>, JsError> {
+        self.key.with_secret(day_secret).map_err(to_js)?.open(id, blob).map_err(to_js)
+    }
+
     /// Decrypt one blob. `id` is the file stem (the manifest is `"m"`).
     pub fn open(&self, id: &str, blob: &[u8]) -> Result<Vec<u8>, JsError> {
         self.key.open(id, blob).map_err(to_js)

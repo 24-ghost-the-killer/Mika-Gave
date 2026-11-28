@@ -54,3 +54,48 @@ Skriv dit brev her.
 Afsnit adskilles af en tom linje.
 """
 signature = "Din, L."
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Optional extras. Delete a section to leave it out.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# A quiz instead of one code: she answers these questions, and the answers together are the key.
+# The QUESTIONS are public (she sees them before anything opens), so keep names and details out of them.
+# You type the ANSWERS when you seal (./start.sh seal); they're never stored.
+# Capitals, spaces and a full stop at the end don't matter.
+[lock]
+questions = [
+  "Hvor mødtes vi første gang?",
+  "Hvad bestilte du den aften?",
+  "Hvad kalder du mig, når ingen hører det?",
+]
+
+# Her star: a real star, high in your sky that night, whose light left it around the year she was born.
+[her_star]
+name = "Navn"          # shown under the star
+born = 1998            # her birth year
+# star = "Vega"        # optional: choose the star yourself (Vega, Altair, Arcturus, Capella, Pollux, …)
+# text = "Den har været på vej mod dig, siden du blev født."   # optional extra words
+
+# Advent calendar: up to 24 doors, one per day 1–24 December. Each door opens at midnight
+# (Danish time) on its day, and not a second before: the server only hands out a door's key on
+# its date, and the key alone opens nothing without the gift's own key.
+# The doors form a Christmas tree in the sky; door 24 is the star on top.
+[advent]
+year = 2026
+
+[[advent.door]]
+day   = 1
+title = "Første låge"
+text  = "God morgen. I dag starter vi en lille tradition."
+# photo = "photos/advent-01.jpg"
+
+[[advent.door]]
+day   = 2
+title = "Et løfte"
+text  = "Morgenmad på sengen i weekenden. Du vælger."
+
+[[advent.door]]
+day   = 24
+title = "Juleaften"
+text  = "Den sidste stjerne. Glædelig jul, min skat."

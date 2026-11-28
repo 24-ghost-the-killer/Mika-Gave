@@ -9,6 +9,11 @@
 //! * Re-encodes photos (≤ 1600 px, JPEG q85, EXIF orientation applied). Every byte of EXIF and GPS
 //!   metadata is dropped, because only pixels are written back.
 //! * Writes `header.bin`, `m.bin` and one random-named `.bin` per photo, then removes stale `.bin` files.
+//! * `[lock]` questions: asks for the answers instead of one code; only the questions are public
+//!   (`lock.json`), the answers together form the key.
+//! * `[advent]` doors: each door is sealed under its own day key (data key + a random day secret).
+//!   The secrets go to `--advent-keys` (default `web/advent-keys/`), outside the public folder; the
+//!   server hands each one out only from midnight on its date.
 
 use std::fs;
 use std::io::Cursor;
@@ -45,6 +50,10 @@ struct Args {
     /// Longest photo edge in pixels
     #[arg(long, default_value_t = 1600)]
     max_px: u32,
+    /// Where the advent day secrets go (served by the server only on their dates).
+    /// Default: `advent-keys/` next to the public folder's parent, i.e. web/advent-keys
+    #[arg(long)]
+    advent_keys: Option<PathBuf>,
 }
 
 // ---------- gift.toml (input) ----------
@@ -60,6 +69,61 @@ struct Gift {
     #[serde(default, rename = "memory")]
     memories: Vec<MemoryIn>,
     letter: Letter,
+    #[serde(default)]
+    lock: Option<LockIn>,
+    #[serde(default)]
+    her_star: Option<HerStar>,
+    #[serde(default)]
+    advent: Option<AdventIn>,
+}
+
+/// Quiz lock: she answers these instead of typing one code. The questions are public.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LockIn {
+    questions: Vec<String>,
+}
+
+/// A real star with her name: the one whose light left it around the year she was born.
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+struct HerStar {
+    name: String,
+    born: i32,
+    /// Optional: pick the star yourself by name (e.g. "Vega"); otherwise the app chooses.
+    #[serde(default)]
+    star: Option<String>,
+    /// Optional extra words shown with the star.
+    #[serde(default)]
+    text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdventIn {
+    /// The December the doors belong to. Default: this year.
+    #[serde(default)]
+    year: Option<i32>,
+    /// When "midnight" is. Default +01:00 (Danish winter time).
+    #[serde(default = "default_offset")]
+    utc_offset: String,
+    #[serde(default, rename = "door")]
+    doors: Vec<DoorIn>,
+}
+
+fn default_offset() -> String {
+    "+01:00".into()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DoorIn {
+    day: u8,
+    title: String,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    photo: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -119,6 +183,32 @@ struct Manifest {
     intro: Option<Intro>,
     memories: Vec<MemoryOut>,
     letter: Letter,
+    her_star: Option<HerStar>,
+    advent: Option<AdventOut>,
+}
+
+#[derive(Serialize)]
+struct AdventOut {
+    year: i32,
+    doors: Vec<DoorRef>,
+}
+
+/// In the manifest: only where a door is and when it opens. Its content is in its own blob,
+/// sealed under the day key.
+#[derive(Serialize)]
+struct DoorRef {
+    day: u8,
+    id: String,
+    opens_ms: i64,
+}
+
+/// Inside a door blob.
+#[derive(Serialize)]
+struct DoorOut {
+    day: u8,
+    title: String,
+    text: String,
+    photo: Option<PhotoRef>,
 }
 
 #[derive(Serialize)]
@@ -168,12 +258,16 @@ fn main() -> Result<()> {
         write_private(&token_path, token.as_bytes())?;
     }
 
-    // Passphrase slot.
-    let pass = if args.no_passphrase { None } else { read_passphrase(&gift)? };
-    if let Some(pass) = pass {
+    // Passphrase slot: a quiz (answers combined) or one code.
+    let pass = match (&gift.lock, args.no_passphrase) {
+        (_, true) => None,
+        (Some(lock), false) => read_answers(&gift, lock)?,
+        (None, false) => read_passphrase(&gift)?,
+    };
+    if let Some(pass) = pass.as_ref() {
         let kdf = KdfParams { m_kib: args.kdf_mib * 1024, t: args.kdf_t, p: 1 };
         eprintln!("Deriving key (Argon2id, {} MiB, t={})…", args.kdf_mib, args.kdf_t);
-        slots.push(dek.passphrase_slot(&pass, kdf, &mut rng).context("invalid KDF parameters")?);
+        slots.push(dek.passphrase_slot(pass, kdf, &mut rng).context("invalid KDF parameters")?);
     }
 
     // Write the ciphertext; stale files are swept afterwards.
@@ -201,6 +295,66 @@ fn main() -> Result<()> {
         memories.push(MemoryOut { date: m.date.clone(), title: m.title.clone(), text: m.text.clone(), photo, alt: m.alt, az: m.az });
     }
 
+    // Advent doors: each under its own day key; the day secrets go to the server's folder.
+    let keys_dir = args.advent_keys.clone().unwrap_or_else(|| {
+        args.out.parent().and_then(Path::parent).unwrap_or(Path::new(".")).join("advent-keys")
+    });
+    let mut advent = None;
+    let mut key_files: Vec<String> = Vec::new();
+    if let Some(a) = gift.advent.as_ref().filter(|a| !a.doors.is_empty()) {
+        let year = a.year.unwrap_or_else(|| time::OffsetDateTime::now_utc().year());
+        let offset = parse_offset(&a.utc_offset)?;
+        fs::create_dir_all(&keys_dir)?;
+        let mut doors = Vec::with_capacity(a.doors.len());
+        for d in &a.doors {
+            let mut secret = Zeroizing::new([0u8; gift_crypto::DAY_SECRET_LEN]);
+            rng.fill_bytes(&mut *secret);
+            let day_key = dek.with_secret(&*secret)?;
+            let photo = match &d.photo {
+                Some(rel) => {
+                    let path = args.content.join(rel);
+                    let (jpeg, w, h) = prepare_photo(&path, args.max_px).with_context(|| format!("photo for advent door {} ({})", d.day, path.display()))?;
+                    let id = random_id(&mut rng);
+                    put(format!("{id}.bin"), &day_key.seal(&id, &jpeg, DEFAULT_BUCKET, &mut rng))?;
+                    Some(PhotoRef { id, w, h })
+                }
+                None => None,
+            };
+            let door = DoorOut { day: d.day, title: d.title.clone(), text: d.text.clone(), photo };
+            let id = random_id(&mut rng);
+            let json = Zeroizing::new(serde_json::to_vec(&door)?);
+            put(format!("{id}.bin"), &day_key.seal(&id, &json, DEFAULT_BUCKET, &mut rng))?;
+
+            let opens_ms = door_opens_ms(year, d.day, offset)?;
+            let hex: String = secret.iter().map(|b| format!("{b:02x}")).collect();
+            let name = format!("{}.json", d.day);
+            fs::write(keys_dir.join(&name), format!("{{\"opens_ms\":{opens_ms},\"secret\":\"{hex}\"}}\n"))?;
+            key_files.push(name);
+            doors.push(DoorRef { day: d.day, id, opens_ms });
+        }
+        doors.sort_by_key(|d| d.day);
+        eprintln!("  advent: {} doors for December {year}; day keys in {}", doors.len(), keys_dir.display());
+        advent = Some(AdventOut { year, doors });
+    }
+    // Day keys from an earlier seal would no longer match anything; remove them.
+    if keys_dir.is_dir() {
+        for entry in fs::read_dir(&keys_dir)? {
+            let name = entry?.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".json") && !key_files.contains(&name) {
+                fs::remove_file(keys_dir.join(&name))?;
+            }
+        }
+    }
+
+    // The quiz questions are public: she reads them before anything is unlocked.
+    let lock_path = args.out.join("lock.json");
+    match (&gift.lock, pass.is_some()) {
+        (Some(lock), true) => fs::write(&lock_path, serde_json::to_vec(&serde_json::json!({ "questions": lock.questions }))?)?,
+        _ => {
+            let _ = fs::remove_file(&lock_path);
+        }
+    }
+
     let (when_ms, utc_offset_min) = parse_when(&gift.sky.when)?;
     let manifest = Manifest {
         v: 1,
@@ -209,6 +363,8 @@ fn main() -> Result<()> {
         intro: gift.intro.clone(),
         memories,
         letter: gift.letter.clone(),
+        her_star: gift.her_star.clone(),
+        advent,
     };
     let json = Zeroizing::new(serde_json::to_vec(&manifest)?);
     put(format!("{MANIFEST_ID}.bin"), &dek.seal(MANIFEST_ID, &json, DEFAULT_BUCKET, &mut rng))?;
@@ -234,6 +390,24 @@ fn validate(g: &Gift) -> Result<()> {
     ensure!(!g.domain.contains("://") && !g.domain.contains('/'), "domain should be a bare host name like gift.example.com");
     ensure!((-90.0..=90.0).contains(&g.sky.lat) && (-180.0..=180.0).contains(&g.sky.lon), "sky.lat/lon out of range");
     ensure!(!g.letter.body.trim().is_empty(), "letter.body is empty");
+    if let Some(lock) = &g.lock {
+        ensure!((1..=5).contains(&lock.questions.len()), "lock.questions: use 1 to 5 questions");
+        ensure!(lock.questions.iter().all(|q| !q.trim().is_empty()), "lock.questions: a question is empty");
+    }
+    if let Some(h) = &g.her_star {
+        let this_year = time::OffsetDateTime::now_utc().year();
+        ensure!(!h.name.trim().is_empty(), "her_star.name is empty");
+        ensure!((1900..=this_year).contains(&h.born), "her_star.born should be a year like 1998");
+    }
+    if let Some(a) = &g.advent {
+        let mut seen = std::collections::HashSet::new();
+        for d in &a.doors {
+            ensure!((1..=24).contains(&d.day), "advent door day {} should be 1–24 (one per December day until Christmas Eve)", d.day);
+            ensure!(seen.insert(d.day), "advent: two doors for day {}", d.day);
+            ensure!(!d.title.trim().is_empty(), "advent door {}: title is empty", d.day);
+        }
+        parse_offset(&a.utc_offset)?;
+    }
     for (i, m) in g.memories.iter().enumerate() {
         if let Some(alt) = m.alt {
             ensure!((5.0..=88.0).contains(&alt), "memory {}: alt should be 5–88°", i + 1);
@@ -247,6 +421,60 @@ fn parse_when(s: &str) -> Result<(f64, i32)> {
     let t = time::OffsetDateTime::parse(s.trim(), &time::format_description::well_known::Rfc3339)
         .with_context(|| format!("sky.when {s:?}: use RFC 3339 with offset, e.g. 2023-08-12T23:40:00+02:00"))?;
     Ok(((t.unix_timestamp_nanos() / 1_000_000) as f64, t.offset().whole_minutes() as i32))
+}
+
+fn parse_offset(s: &str) -> Result<time::UtcOffset> {
+    let bad = || anyhow::anyhow!("advent.utc_offset {s:?}: use e.g. \"+01:00\"");
+    let t = s.trim();
+    let (sign, rest) = match t.as_bytes().first() {
+        Some(b'+') => (1i8, &t[1..]),
+        Some(b'-') => (-1i8, &t[1..]),
+        _ => return Err(bad()),
+    };
+    let (h, m) = rest.split_once(':').ok_or_else(bad)?;
+    let (h, m): (i8, i8) = (h.parse().map_err(|_| bad())?, m.parse().map_err(|_| bad())?);
+    time::UtcOffset::from_hms(sign * h, sign * m, 0).map_err(|_| bad())
+}
+
+/// Midnight at the start of `day` December `year`, at `offset`, in Unix milliseconds.
+fn door_opens_ms(year: i32, day: u8, offset: time::UtcOffset) -> Result<i64> {
+    let date = time::Date::from_calendar_date(year, time::Month::December, day).with_context(|| format!("no {day} December {year}"))?;
+    let t = time::PrimitiveDateTime::new(date, time::Time::MIDNIGHT).assume_offset(offset);
+    Ok((t.unix_timestamp_nanos() / 1_000_000) as i64)
+}
+
+/// Quiz: ask each question (answers are visible while typing, so typos can be seen). `None` means
+/// link-only: Enter on the first answer.
+fn read_answers(g: &Gift, lock: &LockIn) -> Result<Option<Zeroizing<String>>> {
+    let answers: Vec<Zeroizing<String>> = if let Ok(a) = std::env::var("SEAL_ANSWERS") {
+        eprintln!("Using answers from SEAL_ANSWERS.");
+        a.split('|').map(|x| Zeroizing::new(x.to_owned())).collect()
+    } else {
+        eprintln!(
+            "\nThe gift opens when she answers these {} questions. Type the answers she would give.\n\
+             Capitals, spaces and a full stop at the end don't matter. Enter on an empty first answer\n\
+             means no quiz (the private link opens it).\n",
+            lock.questions.len()
+        );
+        let mut out = Vec::new();
+        for (i, q) in lock.questions.iter().enumerate() {
+            eprint!("{}. {q}\n   Svar: ", i + 1);
+            let mut line = Zeroizing::new(String::new());
+            std::io::stdin().read_line(&mut line)?;
+            if i == 0 && line.trim().is_empty() {
+                eprintln!("No quiz: the private link printed below will be the only way in.");
+                return Ok(None);
+            }
+            ensure!(!line.trim().is_empty(), "answer {} is empty; run it again", i + 1);
+            out.push(Zeroizing::new(line.trim().to_owned()));
+        }
+        out
+    };
+    ensure!(answers.len() == lock.questions.len(), "expected {} answers, got {}", lock.questions.len(), answers.len());
+    let pass = gift_crypto::quiz_passphrase(&answers.iter().map(|a| a.as_str()).collect::<Vec<_>>());
+    eprintln!("Her answers become: {} parts (forgiving about capitals, spaces and punctuation).", answers.len());
+    check_strength(g, &pass, true);
+    Ok(Some(pass))
 }
 
 /// `None` means link-only: the user pressed Enter without typing a passphrase.
@@ -276,8 +504,13 @@ fn read_passphrase(g: &Gift) -> Result<Option<Zeroizing<String>>> {
         norm.chars().count() >= 4,
         "that code is too short: use at least 4 characters (a short sentence is best), or press Enter on an empty line for link-only"
     );
+    check_strength(g, &pass, false);
+    Ok(Some(pass))
+}
 
-    // zxcvbn knows the obvious guesses; feed it the personal facts an attacker could also try.
+/// zxcvbn knows the obvious guesses; feed it the personal facts an attacker could also try.
+fn check_strength(g: &Gift, pass: &str, quiz: bool) {
+    let norm = gift_crypto::normalize_passphrase(pass);
     let hints: Vec<&str> = [g.recipient.as_str(), g.sky.place.as_str(), g.sky.when.as_str()]
         .into_iter()
         .chain(g.memories.iter().map(|m| m.date.as_str()))
@@ -288,12 +521,19 @@ fn read_passphrase(g: &Gift) -> Result<Option<Zeroizing<String>>> {
     let secs = 10f64.powf(log10) / 2.0 / 1e4;
     eprintln!("Passphrase strength: ~{:.0} bits; offline cracking at 10⁴ guesses/s ≈ {}", log10 * 10f64.log2(), human(secs));
     if log10 < 10.0 {
-        eprintln!(
-            "⚠  WARNING: weak passphrase. The ciphertext is public, so anyone with the URL can try guesses offline.\n   \
-             Use a longer sentence only the two of you would say, or run with --no-passphrase and use the link."
-        );
+        if quiz {
+            eprintln!(
+                "⚠  WARNING: these answers are easy to guess. The questions and the encrypted files are public, so\n   \
+                 anyone with the URL can try answers offline. Use questions with longer, more personal answers,\n   \
+                 or rely on the private link."
+            );
+        } else {
+            eprintln!(
+                "⚠  WARNING: weak passphrase. The ciphertext is public, so anyone with the URL can try guesses offline.\n   \
+                 Use a longer sentence only the two of you would say, or run with --no-passphrase and use the link."
+            );
+        }
     }
-    Ok(Some(pass))
 }
 
 fn human(s: f64) -> String {

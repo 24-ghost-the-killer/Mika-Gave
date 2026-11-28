@@ -69,12 +69,23 @@ export class Card {
     body.classList.add("is-entering");
     this.content.replaceChildren(body);
     requestAnimationFrame(() => requestAnimationFrame(() => body.classList.remove("is-entering")));
+    this.el.classList.remove("is-single");
     this.counter.textContent = `${index + 1} / ${count}`;
     this.prev.disabled = index === 0;
     this.isLast = index === count - 1;
     this.next.textContent = this.isLast ? `${t.readLetter} ✦` : `${t.next} ›`;
     this.next.classList.toggle("is-letter", this.isLast);
     this.el.classList.add("is-shown");
+    this.el.scrollTop = 0;
+  }
+
+  /** A card on its own (an advent door, her star): no previous/next. */
+  openSingle(m: Memory, photo: PhotoLoader): void {
+    const body = memoryBody(m, photo);
+    body.classList.add("is-entering");
+    this.content.replaceChildren(body);
+    requestAnimationFrame(() => requestAnimationFrame(() => body.classList.remove("is-entering")));
+    this.el.classList.add("is-single", "is-shown");
     this.el.scrollTop = 0;
   }
 

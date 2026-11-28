@@ -233,6 +233,10 @@ impl Header {
 /// The content key. Zeroed on drop.
 pub struct DataKey(Zeroizing<[u8; KEY_LEN]>);
 
+/// Length of an advent day secret (released by the server on its date).
+pub const DAY_SECRET_LEN: usize = 32;
+const DAY_INFO: &[u8] = b"STJ1 day key";
+
 impl DataKey {
     pub fn generate<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
         let mut k = Zeroizing::new([0u8; KEY_LEN]);
@@ -306,6 +310,20 @@ impl DataKey {
         out.extend_from_slice(&nonce);
         out.extend_from_slice(&ct);
         out
+    }
+
+    /// The key for content that also needs a second, separately released secret (an advent door):
+    /// HKDF-SHA256(salt = secret, ikm = this key). Holding only one of the two reveals nothing, so
+    /// the server that releases the secrets on their dates still can't read the content.
+    pub fn with_secret(&self, secret: &[u8]) -> Result<DataKey> {
+        if secret.len() != DAY_SECRET_LEN {
+            return Err(Error::Format);
+        }
+        let mut k = Zeroizing::new([0u8; KEY_LEN]);
+        Hkdf::<Sha256>::new(Some(secret), &*self.0)
+            .expand(DAY_INFO, &mut *k)
+            .expect("32 bytes is a valid HKDF length");
+        Ok(DataKey(k))
     }
 
     /// Decrypt and unpad one blob.
@@ -386,6 +404,21 @@ pub fn normalize_passphrase(s: &str) -> Zeroizing<String> {
     Zeroizing::new(out.to_lowercase())
 }
 
+/// Turn quiz answers into one passphrase. Each answer is forgiving: normalised like a passphrase
+/// (case, spacing, phone quotes), then punctuation around it is dropped, so "Nørrebro." and
+/// "  nørrebro" match. The result then goes through the normal passphrase slot (Argon2id).
+pub fn quiz_passphrase<S: AsRef<str>>(answers: &[S]) -> Zeroizing<String> {
+    let mut out = Zeroizing::new(String::new());
+    for (i, a) in answers.iter().enumerate() {
+        if i > 0 {
+            out.push_str(" | ");
+        }
+        let n = normalize_passphrase(a.as_ref());
+        out.push_str(n.trim_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace() || c == '…'));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,6 +439,32 @@ mod tests {
         let header = Header { slots: vec![link, pass] }.to_bytes();
         let blob = dek.seal(MANIFEST_ID, b"hello stars", DEFAULT_BUCKET, &mut r);
         (header, token, blob)
+    }
+
+    #[test]
+    fn day_secrets_need_both_halves() {
+        let mut r = rng();
+        let dek = DataKey::generate(&mut r);
+        let (a, b) = ([1u8; DAY_SECRET_LEN], [2u8; DAY_SECRET_LEN]);
+        let blob = dek.with_secret(&a).unwrap().seal("d1", b"door one", 0, &mut r);
+        assert_eq!(dek.with_secret(&a).unwrap().open("d1", &blob).unwrap(), b"door one");
+        assert_eq!(dek.with_secret(&b).unwrap().open("d1", &blob).err(), Some(Error::Decrypt));
+        assert_eq!(dek.open("d1", &blob).err(), Some(Error::Decrypt));
+        assert!(dek.with_secret(&[0u8; 5]).is_err());
+    }
+
+    #[test]
+    fn quiz_answers_are_forgiving() {
+        let canon = quiz_passphrase(&["Nørrebro", "Café Dyrehaven", "hej"]);
+        assert_eq!(&*canon, "nørrebro | café dyrehaven | hej");
+        assert_eq!(quiz_passphrase(&["  nørrebro. ", "CAFÉ   dyrehaven!", "\u{201C}Hej\u{201D}…"]), canon);
+        assert_ne!(quiz_passphrase(&["nørrebro", "dyrehaven", "hej"]), canon);
+        // And it unlocks a slot made from the canonical form.
+        let mut r = rng();
+        let dek = DataKey::generate(&mut r);
+        let slot = dek.passphrase_slot(&canon, FAST, &mut r).unwrap();
+        let h = Header { slots: vec![slot] };
+        assert!(h.unlock_passphrase(&quiz_passphrase(&["NØRREBRO", "café dyrehaven", "hej!"])).is_ok());
     }
 
     #[test]

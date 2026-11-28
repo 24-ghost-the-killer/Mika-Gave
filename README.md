@@ -15,6 +15,24 @@ Browser ── https://gave.example.dk/#<link-token> ──► Envoy :443 ──
   Web Worker  : gift-wasm Vault (KDF + decryption). The key never leaves the worker.
 ```
 
+## Extras (optional, in `content/gift.toml`)
+
+* **Quiz lock** (`[lock]`): instead of one code she answers a few questions, one at a time; the
+  answers together are the key (forgiving about capitals, spaces and a full stop). The *questions*
+  are public (`web/public/v/lock.json`) because she reads them before anything opens. Keep names out
+  of them. `seal` asks for the answers; they're never stored. After a wrong try she's taken back to
+  question 1 with her answers kept, so she can fix the one that was off.
+* **Her star** (`[her_star]`): a real star, high in your sky that night, whose light left it around
+  the year she was born ("Lyset, du ser fra den nu, forlod stjernen omkring 1998 – året du blev
+  født"). Distances: HYG database (Hipparcos, CC BY-SA 4.0), in `web/public/near-stars.json`.
+  Pick one yourself with `star = "Vega"`.
+* **Advent calendar** (`[advent]`, `[[advent.door]]`): up to 24 doors, drawn as a Christmas tree
+  in the sky (door 24 is the star on top). Each door opens at midnight on its day, and this is
+  enforced, not just hidden: the door is encrypted under the gift's key **and** a day key that
+  only the server holds, in `web/advent-keys/` outside the public folder, and hands out from that
+  midnight on (`GET /advent/{day}`). The server can't read a door; she can't open one early.
+  Preview all doors locally with `ADVENT_PREVIEW=1 npm --prefix web run dev`.
+
 ## How the encryption works
 
 * A random 256-bit **data key** encrypts every file with AES-256-GCM. Each file has its own nonce, and its name is bound in as associated data, so files can't be swapped. Every file is padded to a 16 KiB bucket, so sizes reveal little.
@@ -203,3 +221,5 @@ npm --prefix web run typecheck
 * Access logs record method, path, status and size only: no query, referrer or user agent. The `#token` is never sent to a server.
 
 Star data: Yale Bright Star Catalogue, 5th ed. (public domain) via [brettonw/YaleBrightStarCatalog](https://github.com/brettonw/YaleBrightStarCatalog).
+Star distances: [HYG database](https://github.com/astronexus/HYG-Database) v4.1 by David Nash, CC BY-SA 4.0
+(`web/public/near-stars.json` is derived from it and shared under the same licence).

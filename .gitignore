@@ -4,6 +4,8 @@
 
 # Sealed output (ciphertext). Kept out of git: offline guessing is only possible with the payload.
 /web/public/v/
+# Advent day keys (written by seal; the server releases them on their dates)
+/web/advent-keys/
 
 /target/
 node_modules/
